@@ -1,32 +1,88 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
 
 const rules = [
   { id: "broad-filesystem", severity: "high", pattern: /full disk|entire filesystem|read all files|write anywhere/i, advice: "Constrain filesystem scope." },
-  { id: "auto-approve", severity: "medium", pattern: /always approve|bypass permissions|do not ask/i, advice: "Require explicit approval for destructive or external actions." },
-  { id: "secret-handling", severity: "high", pattern: /api key|token|password/i, advice: "State how secrets are stored and redacted." },
-  { id: "prompt-injection", severity: "medium", pattern: /ignore previous instructions|system prompt/i, advice: "Add injection handling boundaries." }
+  { id: "auto-approve", severity: "medium", pattern: /always approve|bypass permissions|do not ask|dontAsk|bypassPermissions/i, advice: "Require explicit approval for destructive or external actions." },
+  { id: "hardcoded-secret", severity: "high", pattern: /(sk-[A-Za-z0-9_-]{20,}|xai-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|api[_-]?key\s*[:=]\s*['"][A-Za-z0-9_-]{16,})/i, advice: "Remove hardcoded secrets and rotate them if real." },
+  { id: "secret-policy-missing", severity: "low", pattern: /\b(api key|token|password)\b/i, advice: "Mention secret storage and redaction when a skill handles credentials." },
+  { id: "prompt-injection", severity: "medium", pattern: /ignore previous instructions|system prompt|developer message/i, advice: "Add prompt-injection boundaries and source trust rules." },
+  { id: "destructive-command", severity: "high", pattern: /rm -rf|git reset --hard|drop database|delete all/i, advice: "Gate destructive actions behind explicit approval." },
+  { id: "network-transmit", severity: "medium", pattern: /upload|send to|post to|webhook|external api/i, advice: "State what data leaves the machine and why." },
+  { id: "private-data", severity: "medium", pattern: /contacts|photos|emails|calendar|location|medical|financial/i, advice: "Define privacy boundaries and user confirmation requirements." },
+  { id: "credential-persistence", severity: "medium", pattern: /save password|store token|write credentials/i, advice: "Use secure storage and avoid plain-text persistence." },
+  { id: "shell-execution", severity: "medium", pattern: /execSync|child_process|shell command|bash -c/i, advice: "Document command trust boundaries and quoting rules." },
+  { id: "browser-control", severity: "low", pattern: /click|type into|browser automation|computer use/i, advice: "Clarify when UI actions need confirmation." },
+  { id: "unbounded-scan", severity: "medium", pattern: /recursive scan|scan everything|all directories/i, advice: "Add depth, size, and ignore limits." },
+  { id: "third-party-content", severity: "medium", pattern: /email link|message link|uploaded document|web page says/i, advice: "Treat third-party instructions as untrusted." },
+  { id: "financial-action", severity: "high", pattern: /trade|send money|wire transfer|buy stock|sell stock/i, advice: "Do not execute financial transactions on behalf of the user." },
+  { id: "medical-action", severity: "high", pattern: /diagnose|prescribe|patient record|medical care/i, advice: "Add high-stakes medical safety boundaries." }
 ];
 
-export function lintText(text) {
-  return rules.flatMap((rule) => {
-    const match = text.match(rule.pattern);
-    return match ? [{ id: rule.id, severity: rule.severity, excerpt: match[0], advice: rule.advice }] : [];
-  });
+export function lintText(text, file = "input") {
+  const findings = [];
+  const lines = text.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    for (const rule of rules) {
+      const match = line.match(rule.pattern);
+      if (match) {
+        findings.push({ id: rule.id, severity: rule.severity, file, line: index + 1, excerpt: match[0], advice: rule.advice });
+      }
+    }
+  }
+  return findings;
+}
+
+function walk(target) {
+  const stat = statSync(target);
+  if (stat.isFile()) return [target];
+  const files = [];
+  for (const entry of readdirSync(target, { withFileTypes: true })) {
+    if (["node_modules", ".git", "dist", "coverage"].includes(entry.name)) continue;
+    const full = path.join(target, entry.name);
+    if (entry.isDirectory()) files.push(...walk(full));
+    else if (/\.(md|txt|json|ya?ml)$/i.test(entry.name)) files.push(full);
+  }
+  return files;
+}
+
+export function scanPath(target) {
+  return walk(target).flatMap((file) => lintText(readFileSync(file, "utf8"), file));
 }
 
 export function renderMarkdown(findings) {
   if (!findings.length) return "# Agent Skill Linter\n\nNo risky patterns found.\n";
-  return ["# Agent Skill Linter", "", ...findings.map((finding) => `- **${finding.severity}** ${finding.id}: ${finding.advice} (matched "${finding.excerpt}")`)].join("\n") + "\n";
+  return ["# Agent Skill Linter", "", ...findings.map((finding) => `- **${finding.severity}** ${finding.id} ${finding.file}:${finding.line}: ${finding.advice} (matched "${finding.excerpt}")`)].join("\n") + "\n";
+}
+
+export function renderSarif(findings) {
+  return JSON.stringify({
+    version: "2.1.0",
+    runs: [{
+      tool: { driver: { name: "agent-skill-linter", rules: rules.map((rule) => ({ id: rule.id, shortDescription: { text: rule.advice } })) } },
+      results: findings.map((finding) => ({
+        ruleId: finding.id,
+        level: finding.severity === "high" ? "error" : finding.severity === "medium" ? "warning" : "note",
+        message: { text: finding.advice },
+        locations: [{ physicalLocation: { artifactLocation: { uri: finding.file }, region: { startLine: finding.line } } }]
+      }))
+    }]
+  }, null, 2);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const file = process.argv[2];
   if (!file) {
-    console.error("Usage: agent-skill-linter file.md [--json]");
+    console.error("Usage: agent-skill-linter file-or-directory [--json] [--sarif]");
     process.exit(1);
   }
-  const findings = lintText(readFileSync(file, "utf8"));
-  console.log(process.argv.includes("--json") ? JSON.stringify(findings, null, 2) : renderMarkdown(findings));
-  process.exit(findings.some((finding) => finding.severity === "high") ? 2 : 0);
+  try {
+    const findings = scanPath(file);
+    console.log(process.argv.includes("--sarif") ? renderSarif(findings) : process.argv.includes("--json") ? JSON.stringify(findings, null, 2) : renderMarkdown(findings));
+    process.exit(findings.some((finding) => finding.severity === "high") ? 2 : 0);
+  } catch (error) {
+    console.error(`agent-skill-linter: ${error.message}`);
+    process.exit(2);
+  }
 }

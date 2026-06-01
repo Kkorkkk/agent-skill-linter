@@ -1,7 +1,7 @@
 {
   "name": "agent-skill-linter",
   "version": "0.1.0",
-  "description": "Lint agent skills and prompts for unsafe tool and permission patterns.",
+  "description": "Lint agent skills and prompts for risky tool, permission, privacy, and secret patterns.",
   "type": "module",
   "bin": {
     "agent-skill-linter": "./src/index.js"
@@ -13,8 +13,9 @@
   "keywords": [
     "cli",
     "developer-tools",
-    "ai",
-    "github"
+    "agent",
+    "security",
+    "linter"
   ],
   "license": "MIT",
   "engines": {
