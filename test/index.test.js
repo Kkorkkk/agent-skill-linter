@@ -26,4 +26,5 @@ test("scans JavaScript files and validates CLI flags", () => {
   assert.equal(findings.some((finding) => finding.id === "shell-execution"), true);
   assert.deepEqual(parseCliArgs(["examples/skill.md", "--sarif"]), { file: "examples/skill.md", json: false, sarif: true });
   assert.throws(() => parseCliArgs([]), /Usage:/);
+  assert.throws(() => scanPath(path.join(tmpdir(), "missing-skill-linter-target")), /Cannot scan/);
 });

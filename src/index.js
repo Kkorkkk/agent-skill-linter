@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -38,14 +38,34 @@ export function lintText(text, file = "input") {
 function walk(target, options = {}, depth = 0, files = []) {
   const maxDepth = options.maxDepth ?? 8;
   const maxFiles = options.maxFiles ?? 500;
+  const seen = options.seen ?? new Set();
   if (files.length >= maxFiles) return files;
-  const stat = statSync(target);
+  let stat;
+  try {
+    stat = lstatSync(target);
+  } catch {
+    return files;
+  }
+  if (stat.isSymbolicLink()) return files;
   if (stat.isFile()) return [target];
   if (depth >= maxDepth) return files;
-  for (const entry of readdirSync(target, { withFileTypes: true })) {
+  try {
+    const real = realpathSync(target);
+    if (seen.has(real)) return files;
+    seen.add(real);
+  } catch {
+    return files;
+  }
+  let entries;
+  try {
+    entries = readdirSync(target, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+  for (const entry of entries) {
     if (["node_modules", ".git", "dist", "coverage"].includes(entry.name)) continue;
     const full = path.join(target, entry.name);
-    if (entry.isDirectory()) walk(full, options, depth + 1, files);
+    if (entry.isDirectory()) walk(full, { ...options, seen }, depth + 1, files);
     else if (/\.(md|txt|json|ya?ml|mjs|cjs|js|ts)$/i.test(entry.name)) files.push(full);
     if (files.length >= maxFiles) break;
   }
@@ -53,10 +73,19 @@ function walk(target, options = {}, depth = 0, files = []) {
 }
 
 export function scanPath(target) {
+  try {
+    statSync(target);
+  } catch (error) {
+    throw new Error(`Cannot scan ${target}: ${error.message}`);
+  }
   return walk(target).flatMap((file) => {
-    const stat = statSync(file);
-    if (stat.size > 500_000) return [];
-    return lintText(readFileSync(file, "utf8"), file);
+    try {
+      const stat = statSync(file);
+      if (stat.size > 500_000) return [];
+      return lintText(readFileSync(file, "utf8"), file);
+    } catch {
+      return [];
+    }
   });
 }
 
