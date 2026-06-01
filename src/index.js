@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const rules = [
   { id: "broad-filesystem", severity: "high", pattern: /full disk|entire filesystem|read all files|write anywhere/i, advice: "Constrain filesystem scope." },
@@ -34,21 +35,29 @@ export function lintText(text, file = "input") {
   return findings;
 }
 
-function walk(target) {
+function walk(target, options = {}, depth = 0, files = []) {
+  const maxDepth = options.maxDepth ?? 8;
+  const maxFiles = options.maxFiles ?? 500;
+  if (files.length >= maxFiles) return files;
   const stat = statSync(target);
   if (stat.isFile()) return [target];
-  const files = [];
+  if (depth >= maxDepth) return files;
   for (const entry of readdirSync(target, { withFileTypes: true })) {
     if (["node_modules", ".git", "dist", "coverage"].includes(entry.name)) continue;
     const full = path.join(target, entry.name);
-    if (entry.isDirectory()) files.push(...walk(full));
-    else if (/\.(md|txt|json|ya?ml)$/i.test(entry.name)) files.push(full);
+    if (entry.isDirectory()) walk(full, options, depth + 1, files);
+    else if (/\.(md|txt|json|ya?ml|mjs|cjs|js|ts)$/i.test(entry.name)) files.push(full);
+    if (files.length >= maxFiles) break;
   }
   return files;
 }
 
 export function scanPath(target) {
-  return walk(target).flatMap((file) => lintText(readFileSync(file, "utf8"), file));
+  return walk(target).flatMap((file) => {
+    const stat = statSync(file);
+    if (stat.size > 500_000) return [];
+    return lintText(readFileSync(file, "utf8"), file);
+  });
 }
 
 export function renderMarkdown(findings) {
@@ -71,15 +80,17 @@ export function renderSarif(findings) {
   }, null, 2);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const file = process.argv[2];
-  if (!file) {
-    console.error("Usage: agent-skill-linter file-or-directory [--json] [--sarif]");
-    process.exit(1);
-  }
+export function parseCliArgs(args) {
+  const file = args.find((arg) => !arg.startsWith("--"));
+  if (!file) throw new Error("Usage: agent-skill-linter file-or-directory [--json] [--sarif]");
+  return { file, json: args.includes("--json"), sarif: args.includes("--sarif") };
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
+    const { file, json, sarif } = parseCliArgs(process.argv.slice(2));
     const findings = scanPath(file);
-    console.log(process.argv.includes("--sarif") ? renderSarif(findings) : process.argv.includes("--json") ? JSON.stringify(findings, null, 2) : renderMarkdown(findings));
+    console.log(sarif ? renderSarif(findings) : json ? JSON.stringify(findings, null, 2) : renderMarkdown(findings));
     process.exit(findings.some((finding) => finding.severity === "high") ? 2 : 0);
   } catch (error) {
     console.error(`agent-skill-linter: ${error.message}`);
