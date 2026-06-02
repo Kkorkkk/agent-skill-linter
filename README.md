@@ -2,6 +2,12 @@
 
 [![CI](https://github.com/Kkorkkk/agent-skill-linter/actions/workflows/ci.yml/badge.svg)](https://github.com/Kkorkkk/agent-skill-linter/actions/workflows/ci.yml)
 
+## Overview / 项目说明
+
+English: Agent Skill Linter scans skills, prompts, configs, and small source files for risky automation language, broad permissions, destructive commands, hardcoded-looking secrets, privacy-sensitive flows, and other agent safety smells.
+
+中文：Agent Skill Linter 会扫描 skill、提示词、配置和小型源码文件，寻找高风险自动化措辞、过宽权限、破坏性命令、疑似硬编码密钥、隐私敏感流程，以及其他 agent 安全隐患。
+
 Scan agent skills, prompts, and tool specs for risky permissions or vague instructions.
 
 ## Install
